@@ -2743,24 +2743,35 @@ func Titles(keys []string) map[string]string {
 	loadCache()
 	defer useDBs()()
 	files := allFilesForTitles()
-	// ZCode files a subagent under sess_subagent_agent_<id>, with its
-	// conversation under the parent session's key (ocRoots). A request
-	// names it by the bare id, so its title is read from its own file
-	// when no group carries the key asked for.
-	subFiles := map[string]*file{}
+	// ZCode files a subagent as sess_subagent_agent_<id> and a fork as
+	// sess_<id> with the parent's id in parent_id; ocRoots files both under
+	// the parent session's key. A request names either by its own id, so its
+	// title is read from its own file when no group carries the key asked
+	// for.
+	subFiles := map[string]*file{} // a ZCode session's own id → its file, however grouped
 	for i := range files {
 		f := &files[i]
-		if id, ok := strings.CutPrefix(f.m().sid, "sess_subagent_agent_"); ok && f.agent == "zcode" {
-			subFiles[id] = f
+		if f.agent != "zcode" || f.m().sid == "" {
+			continue
+		}
+		subFiles[f.m().sid] = f
+		for _, prefix := range []string{"sess_subagent_agent_", "sess_", "session_"} {
+			if id, ok := strings.CutPrefix(f.m().sid, prefix); ok {
+				subFiles[id] = f
+				break
+			}
 		}
 	}
-	subAsked := map[string]string{} // the key asked for → the subagent's file
+	subAsked := map[string]string{} // the key asked for → the session's file
 	for _, k := range keys {
 		agent, id, ok := strings.Cut(k, ":")
 		if !ok || agent != "zcode" {
 			continue
 		}
-		if f := subFiles[strings.TrimPrefix(id, "sess_subagent_agent_")]; f != nil {
+		for _, prefix := range []string{"sess_subagent_agent_", "sess_", "session_"} {
+			id = strings.TrimPrefix(id, prefix)
+		}
+		if f := subFiles[id]; f != nil {
 			want[f.key] = true
 			subAsked[k] = f.path
 		}
