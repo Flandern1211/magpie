@@ -1722,6 +1722,11 @@ type dshPiModel struct {
 type dshPiCompat struct {
 	ForceAdaptiveThinking bool `yaml:"forceAdaptiveThinking,omitempty"`
 	SupportsStrictMode    bool `yaml:"supportsStrictMode,omitempty"`
+	// SendSessionAffinityHeaders is dsh's pi-ai session affinity, withheld
+	// for every provider but OpenRouter by default: a dsh fork's own
+	// session id then never reaches magpie, and Routing cannot tell the
+	// fork from the session it copied. Magpie's routes ask for it.
+	SendSessionAffinityHeaders bool `yaml:"sendSessionAffinityHeaders,omitempty"`
 }
 
 // dshAPIs are the wire protocols of llm-pi-ai's (pi-ai's api names) a route
@@ -1956,6 +1961,15 @@ func dshKindConfig(k dshKind, models []catalog.Model, api, gw string) dshPiRoute
 			// required, its optional ones filled (#3055)
 			e.Compat = &dshPiCompat{SupportsStrictMode: true}
 		}
+		// dsh withholds pi-ai's session affinity for every provider but
+		// OpenRouter, so a dsh fork's own session id never reached magpie:
+		// Routing grouped its requests under the session it copied. This
+		// makes dsh send x-session-affinity (or x-session-id) from its own
+		// session id, which dshFiles and Titles already know.
+		if e.Compat == nil {
+			e.Compat = &dshPiCompat{}
+		}
+		e.Compat.SendSessionAffinityHeaders = true
 		r.Models = append(r.Models, e)
 	}
 	return r
