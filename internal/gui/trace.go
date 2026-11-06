@@ -98,16 +98,16 @@ func pricedRoutes(routes []gateway.Route) []routeJSON {
 	titles := sessions.CodexTitles(ids)
 	var loose []string
 	for _, r := range routes {
-		if k := looseConv(r); k != "" {
-			loose = append(loose, k)
-		}
+		loose = append(loose, looseKeys(r)...)
 	}
-	owners := convSessions(loose)
+	owners := routeSessions(loose)
 	pub := publicRefs()
 	for _, r := range routes {
 		r = publicRoute(r, pub)
-		if k := looseConv(r); k != "" && owners[k] != "" {
-			r.Session = owners[k]
+		if r.Session == "" && r.ParentSession == "" && convAgents[r.Agent] {
+			if id := ownerOf(r.Agent, r.ResponseID, r.Conv, owners); id != "" {
+				r.Session = id
+			}
 		}
 		r.Usage = cacheCounted(r.Usage)
 		recs := make([]usage.Record, len(r.Usage))
@@ -131,25 +131,34 @@ func pricedRoutes(routes []gateway.Route) []routeJSON {
 }
 
 // convAgents are the agents whose own session files say which of the
-// gateway's conversation ids are theirs (sessions' Convs): dsh's, whose
-// chat-completions and messages routes send no session id
-// (changqiu4890 on Discord: Routing put every dsh request under "No
-// session ID").
+// gateway's reply and conversation ids are theirs (sessions' ResponseIDs
+// and Convs): dsh's, whose chat-completions and messages routes send no
+// session id (changqiu4890 on Discord: Routing put every dsh request under
+// "No session ID").
 var convAgents = map[string]bool{"dsh": true}
 
-// looseConv is the agent and conversation id (convOwners' key) of a route
-// of such an agent that names no session, "" for any other.
-func looseConv(r gateway.Route) string {
-	if r.Session != "" || r.ParentSession != "" || r.Conv == "" || !convAgents[r.Agent] {
-		return ""
+// looseKeys are the agent and ids (ownerKey's) a route of such an agent that
+// names no session is to be found by, the reply's before its conversation's
+// — a fork copies the conversation's opening but not the reply — and none
+// for any other route.
+func looseKeys(r gateway.Route) []string {
+	if r.Session != "" || r.ParentSession != "" || !convAgents[r.Agent] {
+		return nil
 	}
-	return r.Agent + "\x00" + r.Conv
+	var out []string
+	if r.ResponseID != "" {
+		out = append(out, ownerKey(r.Agent, ownerResponse, r.ResponseID))
+	}
+	if r.Conv != "" {
+		out = append(out, ownerKey(r.Agent, ownerConv, r.Conv))
+	}
+	return out
 }
 
-// routeConvs is convOwners of the sessions listed, for every trace the
+// routeConvs is routeOwners of the sessions listed, for every trace the
 // Routing page polls: listing the sessions reads every agent's folder, so
 // it is made again only when it is convsKept old, or convsFresh old and a
-// route's conversation isn't in it (a session begun since).
+// route's id isn't in it (a reply or a session begun since).
 var routeConvs struct {
 	sync.Mutex
 	at time.Time
@@ -158,9 +167,9 @@ var routeConvs struct {
 
 var convsFresh, convsKept = 2 * time.Second, time.Minute
 
-// convSessions is convOwners for keys (looseConv's), nil when there are
+// routeSessions is routeOwners for keys (looseKeys'), nil when there are
 // none, so a page with no such route lists nothing.
-func convSessions(keys []string) map[string]string {
+func routeSessions(keys []string) map[string]string {
 	if len(keys) == 0 {
 		return nil
 	}
@@ -177,7 +186,7 @@ func convSessions(keys []string) map[string]string {
 		}
 	}
 	if stale {
-		routeConvs.of, routeConvs.at = convOwners(sessions.List(0)), time.Now()
+		routeConvs.of, routeConvs.at = routeOwners(sessions.List(0)), time.Now()
 	}
 	return routeConvs.of
 }
