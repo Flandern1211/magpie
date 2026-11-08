@@ -3061,7 +3061,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		capture.tools = tools
 	}
 	tierAsked := bodyTier(from, body) // the service tier the client asked for (#1784)
-	tr := s.trace.beginFor(r, Route{turn: turn, dirOf: dirOf(from, plain), tools: tools, imageTurn: drawingTurnID(metadata.Turn), imageCaller: codexTurnKey(r, call.Agent), TitleLink: link, Pinned: pinnedName(pin), Time: start, Agent: call.Agent, Session: sessionOf(r.Header), Conv: convOf(r.Header, body), ParentSession: titleParentSession(r.Header, metadata, call.Kind), Kind: call.Kind, For: call.For, Model: call.Model, Effort: requestEffort(from, body), Tier: tierAsked, Provider: p.ID, Group: group, Rule: hit, Nested: nested, SealedTask: sealedTask, LeadAccount: leadAccount, Compaction: compactionWho(checkpoint), Subagent: subagent, Moved: moved, SubagentEffort: subagentEffort, Sub: subOf(r.Header), SubagentID: subagentID, Affinity: shown, Order: pl.order, Left: append(slices.Clip(pl.left), smallW...)})
+	tr := s.trace.beginFor(r, Route{turn: turn, dirOf: dirOf(from, plain), tools: tools, imageTurn: drawingTurnID(metadata.Turn), imageCaller: codexTurnKey(r, call.Agent), TitleLink: link, Pinned: pinnedName(pin), Time: start, Agent: call.Agent, Session: sessionOf(r.Header), Conv: convOf(r.Header, body), LastConvs: dshLastConvs(call.Agent, body), ParentSession: titleParentSession(r.Header, metadata, call.Kind), Kind: call.Kind, For: call.For, Model: call.Model, Effort: requestEffort(from, body), Tier: tierAsked, Provider: p.ID, Group: group, Rule: hit, Nested: nested, SealedTask: sealedTask, LeadAccount: leadAccount, Compaction: compactionWho(checkpoint), Subagent: subagent, Moved: moved, SubagentEffort: subagentEffort, Sub: subOf(r.Header), SubagentID: subagentID, Affinity: shown, Order: pl.order, Left: append(slices.Clip(pl.left), smallW...)})
 	if watched != nil {
 		watched.routeID = tr.ID
 	}
@@ -9292,6 +9292,64 @@ func conversationID(in http.Header, body []byte) string {
 		w.Flush()
 	}
 	return "magpie-" + hex.EncodeToString(h.Sum(nil)[:12])
+}
+
+// dshLastConvs are the conversation ids the newest user turn of a dsh
+// request opens, in the three spellings its session file's copy hashes to
+// (sessions' dshConvs): the message itself, a content of one text part, and
+// that part marked for the cache. A fork copies its source's opening, so
+// the opening names both; the newest message, which only the branch that
+// typed it has, is what tells a request still answering which one it is of
+// (Route.LastConvs, ownerLast). nil for another agent, or a newest message
+// without a single text part.
+func dshLastConvs(agent string, body []byte) []string {
+	if agent != "dsh" {
+		return nil
+	}
+	var m struct {
+		Messages json.RawMessage `json:"messages"`
+	}
+	if decodeJSONView(body, &m) != nil {
+		return nil
+	}
+	items := elementsOf(m.Messages)
+	for i := len(items) - 1; i >= 0; i-- {
+		var msg struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		}
+		if decodeJSONView(items[i], &msg) != nil || msg.Role != "user" {
+			continue
+		}
+		t, ok := oneTextPart(msg.Content)
+		if !ok {
+			c := trimJSON(msg.Content)
+			if len(c) == 0 || c[0] != '"' {
+				return nil
+			}
+			t = c
+		}
+		out := make([]string, 0, 3)
+		for _, s := range [][]byte{
+			joinBytes(`{"role":"user","content":`, t, `}`),
+			joinBytes(`{"role":"user","content":[{"type":"text","text":`, t, `}]}`),
+			joinBytes(`{"role":"user","content":[{"type":"text","text":`, t, `,"cache_control":{"type":"ephemeral"}}]}`),
+		} {
+			sum := sha256.Sum256(s)
+			out = append(out, "magpie-"+hex.EncodeToString(sum[:12]))
+		}
+		return out
+	}
+	return nil
+}
+
+// joinBytes is a, b and c in one slice: the spellings above are written as
+// they go, the request's own text bytes between them.
+func joinBytes(a string, b []byte, c string) []byte {
+	out := make([]byte, 0, len(a)+len(b)+len(c))
+	out = append(out, a...)
+	out = append(out, b...)
+	return append(out, c...)
 }
 
 // writeOpening writes msg, one message of an opening of several

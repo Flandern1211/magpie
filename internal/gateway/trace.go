@@ -190,6 +190,13 @@ type Route struct {
 	// whose agent keeps it can be found again after the fact even when its
 	// conversation opening is one a fork copied (dshConvs)
 	ResponseID string `json:"responseId,omitempty"`
+	// LastConvs: the conversation ids the newest user turn of the request
+	// opens, in the same three spellings as Conv (conversationID; sessions'
+	// dshConvs): a dsh fork copies its source's opening, so both answer the
+	// same Conv, and a request still answering has no reply id yet. The
+	// message the turn carried is what says which branch it is of, as that
+	// branch's own session file has it (sessions' TurnConvs, ownerLast)
+	LastConvs []string `json:"lastConvs,omitempty"`
 	// Folder: the last two levels of the folder its agent says it works
 	// in (shortFolder), never the whole path; a request that says none
 	// takes its session's, as said last (#1068)

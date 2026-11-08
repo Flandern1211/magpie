@@ -261,7 +261,7 @@ type dshEvent struct {
 	} `json:"data"`
 }
 
-var dshWanted = [][]byte{[]byte(`"user/message"`), []byte(`"session/title"`), []byte(`"session/title-llm-request"`), []byte(`"assistant/message"`), []byte(`"session/end-seed"`), []byte(`"tool/call"`)}
+var dshWanted = [][]byte{[]byte(`"user/message"`), []byte(`"session/title"`), []byte(`"session/title-llm-request"`), []byte(`"assistant/message"`), []byte(`"session/end-seed"`), []byte(`"tool/call"`), []byte(`"turn/start"`)}
 
 // dshCarry is what a read of a dsh session file carries on with: where it
 // read to and the header it read first.
@@ -351,6 +351,16 @@ func dshCount(s *state, h *dshHead, b []byte, main bool) {
 			} else {
 				s.Title = title(t)
 			}
+		}
+		if main {
+			// the messages of the turn under way, as its file has them
+			// before the request goes out: the newest of them is what a
+			// request still answering carried (TurnConvs, ownerLast)
+			s.TurnConvs = append(s.TurnConvs, dshConvs(e.Data.Content)...)
+		}
+	case "turn/start":
+		if main {
+			s.TurnConvs = nil
 		}
 	case "session/title":
 		if t := title(e.Data.Title); t != "" {

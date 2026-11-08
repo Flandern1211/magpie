@@ -181,6 +181,7 @@ type ctxRec struct {
 	Agent, Model, Kind, Sub string
 	Session, Parent, Conv   string
 	ResponseID              string
+	TurnConvs               []string // the ids its newest turn's message opened (Route.LastConvs)
 	Done, Failed            bool
 	// Unmatched is a call whose opening a fork copied too, whose reply names
 	// no session yet, and that ended too recently for its reply to be read
@@ -197,7 +198,7 @@ type ctxRec struct {
 // recOf is r as the tab reads it, its whole prompt kept when whole.
 func recOf(r gateway.Route, whole bool) ctxRec {
 	c := ctxRec{ID: r.ID, Time: r.Time, End: r.Time.Add(time.Duration(r.Millis) * time.Millisecond), Agent: r.Agent, Model: r.Model, Kind: r.Kind, Sub: r.Sub,
-		Session: r.Session, Parent: r.ParentSession, Conv: r.Conv, ResponseID: r.ResponseID, Done: r.Done,
+		Session: r.Session, Parent: r.ParentSession, Conv: r.Conv, ResponseID: r.ResponseID, TurnConvs: r.LastConvs, Done: r.Done,
 		Failed: r.Status >= 400 || r.Error != "", Cache: cacheOf(r), CacheKnown: cacheKnown(r)}
 	if p := r.Prompt; p != nil {
 		c.Asked = p.Tokens > 0
@@ -321,15 +322,15 @@ func joinConvs(routes []ctxRec, list func() []sessions.Session) {
 		if r.Session != "" || r.Parent != "" {
 			continue
 		}
-		id, byReply := ownerBy(r.Agent, r.ResponseID, r.Conv, of)
-		if !byReply && r.ResponseID != "" && of[ownerKey(r.Agent, ownerResponse, r.ResponseID)] != "" {
+		id, named := ownerBy(r.Agent, r.ResponseID, r.Conv, r.TurnConvs, of)
+		if !named && r.ResponseID != "" && of[ownerKey(r.Agent, ownerResponse, r.ResponseID)] != "" {
 			// the reply names another conversation, and the guard for a
 			// vendor's repeated ids keeps the opening: as it did before
 			// reply ids were read
 			routes[i].Session = id
 			continue
 		}
-		if !byReply && waitingForReply(&routes[i], sharedOpening(r.Agent, r.Conv, of), now) {
+		if !named && waitingForReply(&routes[i], sharedOpening(r.Agent, r.Conv, of), now) {
 			// its opening is the source's and a fork's both, and its reply
 			// names no one yet: it is neither's until it does
 			routes[i].Unmatched = true
@@ -358,20 +359,36 @@ func waitingForReply(r *ctxRec, shared bool, now time.Time) bool {
 // fork names no parent). Another session's opening goes by the opening, as
 // it did before reply ids were read.
 func ownerOf(agent, responseID, conv string, of map[string]string) string {
-	id, _ := ownerBy(agent, responseID, conv, of)
+	id, _ := ownerBy(agent, responseID, conv, nil, of)
 	return id
 }
 
-// ownerBy is ownerOf, and whether the reply named the session rather than
-// the opening: a route whose opening a fork copied too, and whose reply names
-// no session, belongs to neither (joinConvs).
-func ownerBy(agent, responseID, conv string, of map[string]string) (id string, byReply bool) {
+// ownerOfRoute is ownerOf of a route, its newest turn's message too: the
+// Routing page names a request still answering by it, since no reply id
+// exists yet (Route.LastConvs).
+func ownerOfRoute(r gateway.Route, of map[string]string) string {
+	id, _ := ownerBy(r.Agent, r.ResponseID, r.Conv, r.LastConvs, of)
+	return id
+}
+
+// ownerBy is ownerOf, and whether the reply or the turn's own message named
+// the session rather than the opening: a route whose opening a fork copied
+// too, and whose reply names no session, belongs to neither (joinConvs).
+// turnConvs are the ids the request's newest message opens (Route.LastConvs):
+// a request still answering has no reply id, and the message it carried is
+// the one its branch's file has, not its source's.
+func ownerBy(agent, responseID, conv string, turnConvs []string, of map[string]string) (id string, named bool) {
 	opened := ""
 	if conv != "" {
 		opened = of[ownerKey(agent, ownerConv, conv)]
 	}
 	if responseID != "" {
 		if id := of[ownerKey(agent, ownerResponse, responseID)]; id != "" && (opened == "" || forkedFrom(agent, id, opened, conv, of)) {
+			return id, true
+		}
+	}
+	for _, c := range turnConvs {
+		if id := of[ownerKey(agent, ownerLast, c)]; id != "" {
 			return id, true
 		}
 	}
@@ -402,14 +419,16 @@ func forkedFrom(agent, id, from, conv string, of map[string]string) bool {
 }
 
 // The kinds of id a route without a session id is named by: the reply it
-// got, and the conversation it opens; and a session's source, for the
-// session a fork's reply names (ForkOf), the opening a fork's seed carried,
-// kept on the fork itself (SeedConvs), and that opening kept again among the
-// openings a fork copied, which names neither the source nor the fork alone
-// (ownerCopied).
+// got, and the conversation it opens; the message its newest turn carried,
+// which a request still answering is known by (ownerLast); and a session's
+// source, for the session a fork's reply names (ForkOf), the opening a
+// fork's seed carried, kept on the fork itself (SeedConvs), and that
+// opening kept again among the openings a fork copied, which names neither
+// the source nor the fork alone (ownerCopied).
 const (
 	ownerResponse = "response"
 	ownerConv     = "conv"
+	ownerLast     = "last"
 	ownerFork     = "fork"
 	ownerSeed     = "seed"
 	ownerCopied   = "copied"
@@ -419,10 +438,10 @@ func ownerKey(agent, kind, id string) string { return agent + "\x00" + kind + "\
 
 // routeOwners is each agent's reply ids and conversation ids (agent, NUL,
 // kind, NUL, the id) and the session of that agent each was read from
-// (sessions' ResponseIDs and Convs); "" for an id two sessions share, which
-// stays as it is. A fork's session id is kept with the one it was forked
-// from (ownerFork), and the openings its seed carried among the openings a
-// fork copied (ownerCopied).
+// (sessions' ResponseIDs, Convs and TurnConvs); "" for an id two sessions
+// share, which stays as it is. A fork's session id is kept with the one it
+// was forked from (ownerFork), and the openings its seed carried among the
+// openings a fork copied (ownerCopied).
 func routeOwners(list []sessions.Session) map[string]string {
 	of := map[string]string{}
 	put := func(k, id string) {
@@ -435,6 +454,9 @@ func routeOwners(list []sessions.Session) map[string]string {
 	for _, s := range list {
 		for _, c := range s.Convs {
 			put(ownerKey(s.Agent, ownerConv, c), s.ID)
+		}
+		for _, c := range s.TurnConvs {
+			put(ownerKey(s.Agent, ownerLast, c), s.ID)
 		}
 		for _, r := range s.ResponseIDs {
 			put(ownerKey(s.Agent, ownerResponse, r), s.ID)

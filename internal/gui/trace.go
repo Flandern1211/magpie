@@ -107,7 +107,7 @@ func pricedRoutes(routes []gateway.Route) []routeJSON {
 	for _, r := range routes {
 		r = publicRoute(r, pub)
 		if looseRoute(r) {
-			if id := ownerOf(r.Agent, r.ResponseID, r.Conv, owners); id != "" {
+			if id := ownerOfRoute(r, owners); id != "" {
 				r.Session = id
 			}
 		}
@@ -157,6 +157,12 @@ func looseKeys(r gateway.Route, now time.Time) []string {
 	}
 	if r.Conv != "" {
 		out = append(out, ownerKey(r.Agent, ownerConv, r.Conv))
+	}
+	// the message its newest turn carried: a session's file gains it
+	// before the request goes out, and a listing read before that has no
+	// key to name the request still answering by (Route.LastConvs)
+	for _, c := range r.LastConvs {
+		out = append(out, ownerKey(r.Agent, ownerLast, c))
 	}
 	return out
 }
