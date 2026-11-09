@@ -86,21 +86,20 @@ magpie.plugin("sessions", (ctx) => {
   // another config folder): such sessions are grouped by that, not under
   // "No folder" with the agent's own (lc on Discord).
   const GW = "\x00gateway";
-  // A session its agent ran with no project of its own, in a folder the
-  // agent made for that one session: ZCode keeps ~/.zcode/workspace/
-  // <draft|time>-<uuid>, one for each session started without a project.
-  // One "folder" each was 40 folders of one session, and they are no
-  // projects of the reader's (flandern1211_58540 on Discord): one group of
-  // their own, not "No folder", keeps them apart from sessions whose agent
-  // recorded no folder.
+  // A session its agent ran with no project of its own, in a folder made
+  // for that one session: ZCode's ~/.zcode/workspace/<draft|time>-<uuid>,
+  // Codex Desktop's ~/Documents/Codex/<date>/<name>, where each new chat
+  // gets a folder of its own (its outputs/ and work/, named from the
+  // prompt), a probe Codex ran in a temp folder, a Codex worktree, another
+  // app's hidden folder (scratch). One "folder" each was 40 folders of one
+  // session, and they are no projects of the reader's (flandern1211_58540
+  // on Discord): one group of their own, not "No folder", keeps them apart
+  // from sessions whose agent recorded no folder.
   const SCRATCH = "\x00scratch";
-  const zcodeScratch = (s) => {
-    const home = (data?.home || "").replace(/\\/g, "/").replace(/\/+$/, "");
-    if (!home || s.agent !== "zcode" || !s.cwd) return false;
-    const c = s.cwd.replace(/\\/g, "/");
-    return c === home + "/.zcode/workspace" || c.startsWith(home + "/.zcode/workspace/");
-  };
-  const groupOf = (s) => zcodeScratch(s) ? SCRATCH : s.cwd || (s.gateway ? GW : "");
+  const codexDesktop = (c) => /\/Documents\/Codex\/\d{4}-\d{2}-\d{2}\//i.test(c.replace(/\\/g, "/"));
+  const inScratch = (s) => !!s.cwd && (s.agent === "codex" || s.agent === "zcode")
+    && (scratch(s.cwd) || s.agent === "codex" && codexDesktop(s.cwd));
+  const groupOf = (s) => inScratch(s) ? SCRATCH : s.cwd || (s.gateway ? GW : "");
   const groupName = (k) => k === GW ? t("Seen through the gateway")
     : k === SCRATCH ? t("Scratch sessions") : k ? baseName(k) : t("No folder");
 
@@ -574,7 +573,10 @@ magpie.plugin("sessions", (ctx) => {
 
   function providerBar() {
     if (data.agent !== "codex") return null;
-    const hidden = data.sessions.filter(otherProvider);
+    // Codex's own threads only: its review and title threads (role
+    // subagent) never show in its history, so they are no conversations
+    // to move
+    const hidden = data.sessions.filter((s) => otherProvider(s) && s.role !== "subagent");
     const undo = lastMove?.agent === data.agent && lastMove.moved.length ? lastMove : null;
     if (!hidden.length && !undo) return null;
     const bar = el("div", "row sm-provider");
@@ -1036,9 +1038,9 @@ magpie.plugin("sessions", (ctx) => {
       sub.prepend(p, " ");
     }
     who.append(sub);
-    // a scratch session's folder is a UUID its agent made: the row says
-    // nothing of it otherwise (the group of them is one)
-    if (zcodeScratch(s)) r.title = s.cwd;
+    // a scratch session's folder says nothing of it otherwise (the group
+    // of them is one): the row's tip names the folder it ran in
+    if (inScratch(s)) r.title = s.cwd;
     const hit = hitOf(s);
     if (hit) who.append(hitLine(hit));
     // what it spent, as the Usage page's list shows it
