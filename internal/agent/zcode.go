@@ -155,6 +155,7 @@ func zcodeProviderJSON(path string, keep bool) any {
 		}
 		ms[m.ID] = e
 	}
+	zcodeOutputsKept(path, ms)
 	on := true
 	if v, ok := edit.GetJSON(path, "provider."+magpieID+".enabled"); ok && v == "false" {
 		on = false
@@ -165,6 +166,43 @@ func zcodeProviderJSON(path string, keep bool) any {
 	}
 	return map[string]any{"name": "magpie", "kind": zcodeKinds[zcodeFormat(filepath.Dir(path))], "enabled": on, "source": "custom",
 		"options": map[string]any{"apiKey": token, "baseURL": base}, "models": ms}
+}
+
+// zcodeOutputsKept keeps a limit.output typed by hand into magpie's models
+// in config.json at path (outputsKept); ms is the models magpie writes.
+func zcodeOutputsKept(path string, ms map[string]any) {
+	want := map[string]int{}
+	for id, v := range ms {
+		e, _ := v.(map[string]any)
+		l, _ := e["limit"].(map[string]any)
+		if n := numberOf(l["output"]); n > 0 {
+			want[id] = n
+		}
+	}
+	if len(want) == 0 {
+		return
+	}
+	have := map[string]int{}
+	if raw, ok := edit.GetJSON(path, "provider."+magpieID+".models"); ok {
+		var cur map[string]struct {
+			Limit struct {
+				Output int `json:"output"`
+			} `json:"limit"`
+		}
+		if json.Unmarshal([]byte(raw), &cur) == nil {
+			for id, c := range cur {
+				have[id] = c.Limit.Output
+			}
+		}
+	}
+	kept := outputsKept(path, want, have)
+	for id, v := range ms {
+		e, _ := v.(map[string]any)
+		l, _ := e["limit"].(map[string]any)
+		if n := kept[id]; n > 0 {
+			l["output"] = n
+		}
+	}
 }
 
 // zcodeDefaultLevels is the default level each of magpie's models has in
@@ -537,6 +575,38 @@ func zcodeRuled(path string) bool {
 	return false
 }
 
+// zcodeRuleOutputsKept keeps a maxOutputTokens typed by hand into magpie's
+// model rules in provider_config.json at path (outputsKept); specs are the
+// optionSpecs magpie writes, by model.
+func zcodeRuleOutputsKept(path string, want map[string]int, specs map[string]map[string]any, ours map[any]map[string]any) {
+	if len(want) == 0 {
+		return
+	}
+	have := map[string]int{}
+	for id, r := range ours {
+		if s, ok := id.(string); ok {
+			if n := zcodeRuleOutput(r); n > 0 {
+				have[s] = n
+			}
+		}
+	}
+	kept := outputsKept(path, want, have)
+	for id, s := range specs {
+		if n := kept[id]; n > 0 {
+			s["maxOutputTokens"] = map[string]any{"max": n}
+		}
+	}
+}
+
+// zcodeRuleOutput is the maxOutputTokens in magpie's model rule r, 0 when
+// it has none.
+func zcodeRuleOutput(r map[string]any) int {
+	cfg, _ := r["config"].(map[string]any)
+	specs, _ := cfg["optionSpecs"].(map[string]any)
+	mt, _ := specs["maxOutputTokens"].(map[string]any)
+	return numberOf(mt["max"])
+}
+
 // zcodeRules puts magpie's provider and its models' rules into ZCode's
 // provider_config.json (on) or takes them out, leaving every other rule and
 // key as ZCode wrote it. A sync (keep) leaves an address on another machine
@@ -600,6 +670,8 @@ func zcodeRules(path string, on, keep bool) error {
 	if on {
 		format := zcodeFormat(filepath.Dir(path))
 		searched, known := zcodeSearched()
+		want := map[string]int{}
+		modelSpecs := map[string]map[string]any{}
 		var ids []string
 		for _, m := range sharedModels("zcode") {
 			ids = append(ids, m.ID)
@@ -622,15 +694,18 @@ func zcodeRules(path string, on, keep bool) error {
 			specs := map[string]any{}
 			if out := outputOr(m, zcodeOutput(maxTokens(m))); out > 0 {
 				specs["maxOutputTokens"] = map[string]any{"max": out}
+				want[m.ID] = out
 			}
 			if levels := zcodeLevels(m.Efforts); levels != nil {
 				specs["reasoningLevel"] = map[string]any{"values": levels}
 			}
+			modelSpecs[m.ID] = specs
 			if len(specs) > 0 {
 				config["optionSpecs"] = specs
 			}
 			models = append(models, map[string]any{"providerId": magpieID, "modelId": m.ID, "config": config})
 		}
+		zcodeRuleOutputsKept(path, want, modelSpecs, ours)
 		if ids == nil {
 			ids = []string{}
 		}
