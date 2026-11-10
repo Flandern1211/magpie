@@ -541,7 +541,7 @@ func dshMirrorHome(dir string, models []catalog.Model, gw string, start bool) er
 	if dshConfigIndex(items, dshPiRow) >= 0 {
 		on := dshWired(web)
 		if !on || len(models) > 0 {
-			if items, err = dshPutRoute(items, on, models, gw); err != nil {
+			if items, err = dshPutRoute(items, on, models, gw, home); err != nil {
 				return err
 			}
 		}
@@ -1442,7 +1442,7 @@ func dshSettingsRoute(dir string, on bool, models []catalog.Model, gw string) er
 			return nil
 		}
 		providers := &yaml.Node{Kind: yaml.MappingNode}
-		if err := dshPutProviders(providers, true, models, gw); err != nil {
+		if err := dshPutProviders(providers, true, models, gw, path); err != nil {
 			return err
 		}
 		if err := dshKeepImported(dir); err != nil {
@@ -1468,7 +1468,7 @@ func dshSettingsRoute(dir string, on bool, models []catalog.Model, gw string) er
 			return nil
 		}
 		providers := &yaml.Node{Kind: yaml.MappingNode}
-		if err := dshPutProviders(providers, true, models, gw); err != nil {
+		if err := dshPutProviders(providers, true, models, gw, path); err != nil {
 			return err
 		}
 		return edit.SetYAML(path, edit.KV{Path: dshPiRow + ".providers", Value: providers})
@@ -1482,7 +1482,7 @@ func dshSettingsRoute(dir string, on bool, models []catalog.Model, gw string) er
 		}
 		before, _ := yaml.Marshal(n)
 		providers := yamlMapping(n, "providers")
-		if err := dshPutProviders(providers, on, models, gw); err != nil {
+		if err := dshPutProviders(providers, on, models, gw, path); err != nil {
 			return false, false
 		}
 		if !on && len(providers.Content) == 0 {
@@ -1618,7 +1618,7 @@ func dshSetFile(path, v string, modern bool, models []catalog.Model, gw string) 
 		drop("api-gateway")
 		drop("agent-loop")
 		drop("llm-deepseek")
-		if items, err = dshPutRoute(items, false, nil, gw); err != nil {
+		if items, err = dshPutRoute(items, false, nil, gw, path); err != nil {
 			return err
 		}
 		if modern {
@@ -1626,7 +1626,7 @@ func dshSetFile(path, v string, modern bool, models []catalog.Model, gw string) 
 		}
 	case modern && viaGateway:
 		drop("llm-deepseek") // magpie's before it was a provider of its own
-		if items, err = dshPutRoute(items, true, models, gw); err != nil {
+		if items, err = dshPutRoute(items, true, models, gw, path); err != nil {
 			return err
 		}
 		if !contains(dshLevels(dshListFor(path), ref), effort) {
@@ -1636,7 +1636,7 @@ func dshSetFile(path, v string, modern bool, models []catalog.Model, gw string) 
 		items = dshPutSearch(items, dshProfileHome(path), dshSearchModel(ref), gw)
 	case modern:
 		drop("llm-deepseek")
-		if items, err = dshPutRoute(items, false, nil, gw); err != nil {
+		if items, err = dshPutRoute(items, false, nil, gw, path); err != nil {
 			return err
 		}
 		items = dshPutSearch(items, dshProfileHome(path), "", gw)
@@ -1660,7 +1660,7 @@ func dshSetFile(path, v string, modern bool, models []catalog.Model, gw string) 
 // custom providers of the llm-pi-ai entry, or with on false takes it out.
 // Other routes there, the user's or ones dsh added beside magpie's, stay; an
 // entry left with nothing goes.
-func dshPutRoute(items []dshItem, on bool, models []catalog.Model, gw string) ([]dshItem, error) {
+func dshPutRoute(items []dshItem, on bool, models []catalog.Model, gw, path string) ([]dshItem, error) {
 	i := dshConfigIndex(items, dshPiRow)
 	if i < 0 {
 		i = dshFindLast(items, dshPiRow)
@@ -1681,7 +1681,7 @@ func dshPutRoute(items []dshItem, on bool, models []catalog.Model, gw string) ([
 	}
 	config := yamlMapping(n, "config")
 	providers := yamlMapping(config, "providers")
-	if err := dshPutProviders(providers, on, models, gw); err != nil {
+	if err := dshPutProviders(providers, on, models, gw, path); err != nil {
 		return nil, err
 	}
 	if on {
@@ -1709,7 +1709,7 @@ func dshPutRoute(items []dshItem, on bool, models []catalog.Model, gw string) ([
 // llm-pi-ai config's providers mapping, or with on false takes them out. The
 // user's own routes there stay, and so do the protocol and compat switches
 // picked for magpie's in dsh's Models page.
-func dshPutProviders(providers *yaml.Node, on bool, models []catalog.Model, gw string) error {
+func dshPutProviders(providers *yaml.Node, on bool, models []catalog.Model, gw, path string) error {
 	if !on {
 		for _, k := range dshKinds {
 			yamlDelKey(providers, k.key)
@@ -1731,16 +1731,25 @@ func dshPutProviders(providers *yaml.Node, on bool, models []catalog.Model, gw s
 		// the wire protocol the user picked for the route in dsh's
 		// Models page stays, when it is one the gateway speaks
 		api := ""
-		if v := yamlKey(yamlKey(providers, k.key), "api"); v != nil && v.Kind == yaml.ScalarNode {
+		cur := yamlKey(providers, k.key)
+		if v := yamlKey(cur, "api"); v != nil && v.Kind == yaml.ScalarNode {
 			api = v.Value
 		}
+		cfg := dshKindConfig(k, ms, api, gw)
+		if kept := dshMaxTokensKept(path, cur, ms); kept != nil {
+			for i := range cfg.Models {
+				if n := kept[cfg.Models[i].ID]; n > 0 {
+					cfg.Models[i].MaxTokens = n
+				}
+			}
+		}
 		var route yaml.Node
-		if err := route.Encode(dshKindConfig(k, ms, api, gw)); err != nil {
+		if err := route.Encode(cfg); err != nil {
 			return err
 		}
 		// what dsh's Models page added to it (a default level, headers)
 		// stays; magpie's fields are put as they are now
-		if cur := yamlKey(providers, k.key); cur != nil && cur.Kind == yaml.MappingNode {
+		if cur != nil && cur.Kind == yaml.MappingNode {
 			dshKeepCompat(cur, &route)
 			for j := 0; j+1 < len(route.Content); j += 2 {
 				if route.Content[j].Value == dshIdleKey && yamlKey(cur, dshIdleKey) != nil {
@@ -1753,6 +1762,39 @@ func dshPutProviders(providers *yaml.Node, on bool, models []catalog.Model, gw s
 		}
 	}
 	return nil
+}
+
+// dshMaxTokensKept keeps a maxTokens typed by hand into magpie's models in
+// the route at cur, in the patch list at path (outputsKept): what magpie
+// writes now, with the user's value kept. nil when there is nothing to keep
+// or path is no file's (a route built in memory).
+func dshMaxTokensKept(path string, cur *yaml.Node, models []catalog.Model) map[string]int {
+	if path == "" {
+		return nil
+	}
+	want := map[string]int{}
+	for _, m := range models {
+		if m.Output > 0 {
+			want[m.ID] = dshMaxTokens(m)
+		}
+	}
+	if len(want) == 0 {
+		return nil
+	}
+	have := map[string]int{}
+	if ms := yamlKey(cur, "models"); ms != nil && ms.Kind == yaml.SequenceNode {
+		for _, n := range ms.Content {
+			id, mt := yamlKey(n, "id"), yamlKey(n, "maxTokens")
+			if id == nil || mt == nil {
+				continue
+			}
+			var v int
+			if mt.Decode(&v) == nil && v > 0 {
+				have[id.Value] = v
+			}
+		}
+	}
+	return outputsKept(path, want, have)
 }
 
 // dshKeepCompat carries the compat switches set by hand in dsh's Models page
@@ -2361,7 +2403,7 @@ func dshRouteAgainSaid(f string, models []catalog.Model, gw string) (string, err
 		return "route", err
 	}
 	before := dshJoin(items)
-	if items, err = dshPutRoute(items, true, models, gw); err != nil {
+	if items, err = dshPutRoute(items, true, models, gw, f); err != nil {
 		return "", nil
 	}
 	what := "search"
@@ -2405,7 +2447,7 @@ func dshWriteParsed(f string, head []string, items []dshItem, models []catalog.M
 		return false, nil
 	}
 	before := dshJoin(items)
-	if items, err := dshPutRoute(items, true, models, gw); err != nil {
+	if items, err := dshPutRoute(items, true, models, gw, f); err != nil {
 		return false, nil
 	} else if dshJoin(items) == before {
 		return false, nil
@@ -2794,7 +2836,7 @@ func dshFillNewProfiles(files []string, models []catalog.Model, gw string) error
 			continue
 		}
 		// a model of the user's: magpie's are listed beside it
-		if items, err = dshPutRoute(items, true, models, gw); err != nil {
+		if items, err = dshPutRoute(items, true, models, gw, f); err != nil {
 			continue
 		}
 		if err := dshWrite(f, head, items); err != nil {
