@@ -205,6 +205,10 @@ func readAnthropic(body []byte, clientMarks, facts bool) (*Request, error) {
 					if b.Source != nil {
 						msg.Parts = append(msg.Parts, Part{Kind: Image, MediaType: b.Source.MediaType, Data: b.Source.Data, URL: b.Source.URL, block: true})
 					}
+				case "video", "document":
+					if b.Source != nil {
+						msg.Parts = append(msg.Parts, Part{Kind: File, MediaType: b.Source.MediaType, Data: b.Source.Data, URL: b.Source.URL, block: true})
+					}
 				case "tool_use":
 					msg.Parts = append(msg.Parts, Part{Kind: ToolCall, ID: anthropicInID(b.ID), Name: b.Name, Args: b.Input, block: true})
 				case "tool_result":

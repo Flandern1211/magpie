@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/yetone/magpie/internal/appdir"
+	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
 )
@@ -132,15 +133,13 @@ func zcode(home string) *Agent {
 func zcodeProviderJSON(path string, keep bool) any {
 	was, own := zcodeDefaultLevels(path), zcodeLevelOptions(path)
 	ms := map[string]any{}
+	format := zcodeFormat(filepath.Dir(path))
 	for _, m := range sharedModels("zcode") {
 		window := m.Context
 		if window == 0 {
 			window = 200000
 		}
-		in := []string{"text"}
-		if m.Images {
-			in = append(in, "image")
-		}
+		in := zcodeInputs(m, format)
 		limit := map[string]any{"context": window}
 		// without it ZCode caps every reply at 32000 tokens
 		if out := outputOr(m, zcodeOutput(maxTokens(m))); out > 0 {
@@ -164,8 +163,28 @@ func zcodeProviderJSON(path string, keep bool) any {
 	if keep {
 		base, token = zcodeKept(filepath.Dir(path))
 	}
-	return map[string]any{"name": "magpie", "kind": zcodeKinds[zcodeFormat(filepath.Dir(path))], "enabled": on, "source": "custom",
+	return map[string]any{"name": "magpie", "kind": zcodeKinds[format], "enabled": on, "source": "custom",
 		"options": map[string]any{"apiKey": token, "baseURL": base}, "models": ms}
+}
+
+// zcodeInputs are the input kinds ZCode may safely send through format and
+// magpie may carry on to the model. ZCode's Responses adapter refuses video
+// before making a request; its Chat and Messages adapters send video and PDF
+// in shapes the gateway reads (#5098).
+func zcodeInputs(m catalog.Model, format string) []string {
+	in := []string{"text"}
+	if m.Images {
+		in = append(in, "image")
+	}
+	if format != "anthropic-messages" && format != "openai-chat-completions" {
+		return in
+	}
+	for _, kind := range m.InputModalities {
+		if (kind == "video" || kind == "pdf") && !slices.Contains(in, kind) {
+			in = append(in, kind)
+		}
+	}
+	return in
 }
 
 // zcodeOutputsKept keeps a limit.output typed by hand into magpie's models
@@ -681,7 +700,12 @@ func zcodeRules(path string, on, keep bool) error {
 				delete(searched, m.ID)
 				continue
 			}
-			props := map[string]any{"inputFormat": map[string]any{"supportsImage": m.Images}}
+			inputs := zcodeInputs(m, format)
+			props := map[string]any{"inputFormat": map[string]any{
+				"supportsImage": slices.Contains(inputs, "image"),
+				"supportsVideo": slices.Contains(inputs, "video"),
+				"supportsPdf":   slices.Contains(inputs, "pdf"),
+			}}
 			if m.Context > 0 {
 				props["contextWindow"] = m.Context
 			}

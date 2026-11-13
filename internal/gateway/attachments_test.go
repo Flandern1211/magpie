@@ -110,6 +110,42 @@ func TestChatFilePart(t *testing.T) {
 	}
 }
 
+// ZCode 0.17.1 with a local WebM attached was captured sending a video block
+// (Messages) and a video_url data URL (Chat). Both must reach Code Assist as
+// inlineData rather than disappearing (#5098); the base64 is the capture's
+// first bytes, shortened.
+func TestZCodeVideoPartsReachCodeAssist(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+	}{
+		{"anthropic", `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":[{"type":"text","text":"what happens?"},{"type":"video","source":{"type":"base64","media_type":"video/webm","data":"GkXfo59ChoEB"}},{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"UERG"}}]}]}`},
+		{"chat", `{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"what happens?"},{"type":"video_url","video_url":{"url":"data:video/webm;base64,GkXfo59ChoEB"}}]}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var r *Request
+			var err error
+			if tc.name == "anthropic" {
+				r, err = parseAnthropic([]byte(tc.body))
+			} else {
+				r, err = parseChat([]byte(tc.body))
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(r.Messages) != 1 || len(r.Messages[0].Parts) == 0 {
+				t.Fatalf("parts were dropped: %+v", r.Messages)
+			}
+			b := buildCodeAssist(r, "gemini-4-argon", "antigravity")
+			if !strings.Contains(string(b), `"mimeType":"video/webm"`) || !strings.Contains(string(b), `"data":"GkXfo59ChoEB"`) {
+				t.Fatalf("video did not reach Code Assist: %s", b)
+			}
+			if tc.name == "anthropic" && (!strings.Contains(string(b), `"mimeType":"application/pdf"`) || !strings.Contains(string(b), `"data":"UERG"`)) {
+				t.Fatalf("PDF did not reach Code Assist: %s", b)
+			}
+		})
+	}
+}
+
 // A held Gemini stream is kept alive with nothing: agy fails on an SSE
 // comment ("invalid stream chunk: : keepalive", #934), as Google's SDK
 // does (geminiEncoder.keepalive). The other protocols still get theirs.

@@ -190,6 +190,9 @@ func chatParts(raw json.RawMessage) []Part {
 			URL    string `json:"url"`
 			Detail string `json:"detail"`
 		} `json:"image_url"`
+		VideoURL struct {
+			URL string `json:"url"`
+		} `json:"video_url"`
 		File struct {
 			FileData string `json:"file_data"`
 			FileID   string `json:"file_id"`
@@ -206,6 +209,10 @@ func chatParts(raw json.RawMessage) []Part {
 			im := imagePart(it.ImageURL.URL)
 			im.Detail = it.ImageURL.Detail
 			out = append(out, im)
+		case "video_url":
+			if p, ok := chatURLFile(it.VideoURL.URL); ok {
+				out = append(out, p)
+			}
 		case "file":
 			if p, ok := chatFile(it.File.FileData, it.File.FileID, it.File.Filename); ok {
 				out = append(out, p)
@@ -213,6 +220,17 @@ func chatParts(raw json.RawMessage) []Part {
 		}
 	}
 	return out
+}
+
+// chatURLFile is a Chat Completions video_url as a file of the request.
+// ZCode sends a local video as a data URL; a remote URL remains a file URL.
+func chatURLFile(u string) (Part, bool) {
+	if u == "" {
+		return Part{}, false
+	}
+	p := imagePart(u)
+	p.Kind = File
+	return p, true
 }
 
 // chatFile is a Chat Completions file part (a PDF, say) as a file of the

@@ -687,3 +687,76 @@ func TestZCodeOnWindowsUsesTheHomeZCodeReads(t *testing.T) {
 		t.Fatalf("darwin: %s", got)
 	}
 }
+
+// ZCode keeps video and PDF input kinds the provider catalog knows, and its
+// rules only advertise kinds that the selected ZCode protocol can carry (#5098).
+func TestZCodeMediaCapabilities(t *testing.T) {
+	home := syncHome(t)
+	base := "http://127.0.0.1:2/v1"
+	if err := provider.Save(provider.Provider{ID: "media", Name: "Media", Chat: base, Key: "k", Models: []string{"gemini"}}); err != nil {
+		t.Fatal(err)
+	}
+	imageInput := true
+	if err := catalog.SaveLive("media", base, []catalog.Model{{ID: "gemini", Name: "Gemini", Images: true, ImageInput: &imageInput, InputModalities: []string{"text", "image", "video", "pdf"}, OutputModalities: []string{"text"}}}); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, ".zcode", "v2", "config.json")
+	rules := filepath.Join(home, ".zcode", "v2", "provider_config.json")
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	os.WriteFile(path, []byte(`{"provider":{}}`), 0o644)
+	os.WriteFile(rules, []byte(`{"schemaVersion":1,"config":{"providerConfigRules":{"providerRules":[]},"modelConfigRules":{"providerModelRules":[],"manualProviderModelRules":[]}}}`), 0o600)
+	if err := zcode(home).Field("provider").Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		Provider map[string]struct {
+			Models map[string]struct {
+				Modalities struct {
+					Input []string `json:"input"`
+				} `json:"modalities"`
+			} `json:"models"`
+		} `json:"provider"`
+	}
+	b, _ := os.ReadFile(path)
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatal(err)
+	}
+	got := c.Provider["magpie"].Models["media/gemini"].Modalities.Input
+	if !slices.Equal(got, []string{"text", "image", "video", "pdf"}) {
+		t.Fatalf("config modalities: %v", got)
+	}
+	var d struct {
+		Config struct {
+			ModelConfigRules struct {
+				ProviderModelRules []struct {
+					ModelID string `json:"modelId"`
+					Config  struct {
+						Properties struct {
+							InputFormat struct {
+								Image bool `json:"supportsImage"`
+								Video bool `json:"supportsVideo"`
+								PDF   bool `json:"supportsPdf"`
+							} `json:"inputFormat"`
+						} `json:"properties"`
+					} `json:"config"`
+				} `json:"providerModelRules"`
+			} `json:"modelConfigRules"`
+		} `json:"config"`
+	}
+	rb, _ := os.ReadFile(rules)
+	if err := json.Unmarshal(rb, &d); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, r := range d.Config.ModelConfigRules.ProviderModelRules {
+		if r.ModelID == "media/gemini" {
+			found = true
+			if !r.Config.Properties.InputFormat.Image || !r.Config.Properties.InputFormat.Video || !r.Config.Properties.InputFormat.PDF {
+				t.Fatalf("input capabilities: %+v", r.Config.Properties.InputFormat)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no media model rule in %s", rb)
+	}
+}
